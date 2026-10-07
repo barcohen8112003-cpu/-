@@ -59,12 +59,30 @@ export async function fetchShares(): Promise<Shares | null> {
   }
 }
 
+export type Period = 'today' | 'week' | 'all'
+export type Leaderboard = {
+  top: { nickname: string; points: number; rounds: number; wins: number; me: boolean }[]
+  winners: { day: string; nickname: string; points: number }[]
+}
+
+// Null when the server has no database, or cannot be reached.
+export async function fetchLeaderboard(period: Period, player: Player | null): Promise<Leaderboard | null> {
+  try {
+    const res = await fetch(`/api/leaderboard?${new URLSearchParams({ period, me: player?.id ?? '' })}`)
+    const body = res.ok ? await res.json() : null
+    return body?.top ? body : null
+  } catch {
+    return null
+  }
+}
+
 export type AdminStats = {
   totals: { players: number; visits: number; rounds: number }
   days: { day: string; visits: number; players: number; rounds: number }[]
   breakdown: { lang: Lang; diff: number; rounds: number }[]
   recent: { at: string; nickname: string | null; title: string; artist: string; lang: Lang; diff: number; outcome: string; points: number }[]
   artistRounds: { lang: Lang; artist: string; rounds: number }[]
+  players: { nickname: string; joined: string; visits: number; rounds: number; points: number; last_round: string | null }[]
   shares: Shares
 }
 

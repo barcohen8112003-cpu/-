@@ -113,6 +113,39 @@ const routes = {
     return {}
   },
 
+  // Public scoreboard: top players for a period, and the top scorer of each recent day.
+  // Player ids stay private; the caller's own row is only flagged.
+  'GET /api/leaderboard': async (req) => {
+    rateLimit(req)
+    const params = new URL(req.url, 'http://x').searchParams
+    const period = {
+      today: `${day('r.at')} = ${day('now()')}`,
+      week: "r.at > now() - interval '7 days'",
+      all: 'true',
+    }[params.get('period')]
+    check(period, 'Bad period')
+    const [top, winners] = await Promise.all([
+      db.query(
+        `SELECT p.nickname, sum(r.points)::int AS points, count(*)::int AS rounds,
+                (count(*) FILTER (WHERE r.outcome <> 'lost'))::int AS wins, (p.id = $1) AS me
+         FROM rounds r JOIN players p ON p.id = r.player_id
+         WHERE ${period} GROUP BY p.id, p.nickname
+         ORDER BY points DESC, rounds ASC LIMIT 20`,
+        [params.get('me') ?? ''],
+      ),
+      db.query(
+        `SELECT DISTINCT ON (day) day, nickname, points FROM (
+           SELECT ${day('r.at')} AS day, p.nickname, sum(r.points)::int AS points
+           FROM rounds r JOIN players p ON p.id = r.player_id
+           WHERE r.at > now() - interval '8 days' GROUP BY 1, p.id, p.nickname
+         ) totals
+         WHERE day < ${day('now()')} AND points > 0
+         ORDER BY day DESC, points DESC LIMIT 7`,
+      ),
+    ])
+    return { top: top.rows, winners: winners.rows }
+  },
+
   'GET /api/admin/stats': async (req) => {
     requireAdmin(req)
     const [totals, visitDays, roundDays, breakdown, recent, artists, shares] = await Promise.all([
@@ -130,6 +163,13 @@ const routes = {
                 WHERE at > now() - interval '30 days' GROUP BY 1, 2`),
       getShares(),
     ])
+    const players = await db.query(
+      `SELECT p.nickname, p.created_at AS joined, count(r.id)::int AS rounds,
+              coalesce(sum(r.points), 0)::int AS points, max(r.at) AS last_round,
+              (SELECT count(*)::int FROM visits v WHERE v.player_id = p.id) AS visits
+       FROM players p LEFT JOIN rounds r ON r.player_id = p.id
+       GROUP BY p.id ORDER BY points DESC, p.created_at DESC LIMIT 200`,
+    )
     const days = new Map()
     for (const row of [...visitDays.rows, ...roundDays.rows]) {
       days.set(row.day, { visits: 0, players: 0, rounds: 0, ...days.get(row.day), ...row })
@@ -140,6 +180,7 @@ const routes = {
       breakdown: breakdown.rows,
       recent: recent.rows,
       artistRounds: artists.rows,
+      players: players.rows,
       shares,
     }
   },

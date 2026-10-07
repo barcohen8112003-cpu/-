@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { DEFAULT_SHARES, fetchShares, loadPlayer, savePlayer, trackRound, trackVisit } from './api'
+import { DEFAULT_SHARES, fetchLeaderboard, fetchShares, loadPlayer, savePlayer, trackRound, trackVisit, type Leaderboard, type Period, type Player } from './api'
 import { TEXT, type Lang } from './i18n'
 import { SnippetPlayer } from './player'
 import { catalogs, isArtistOf, isSameSong, pickSong, searchArtists, searchSongs, type Song } from './songs'
@@ -87,6 +87,7 @@ export default function App() {
   // Who is playing: a nickname and a random id, kept in this browser.
   const [who, setWho] = useState(loadPlayer)
   const [askName, setAskName] = useState(!who)
+  const [showBoard, setShowBoard] = useState(false)
   const visited = useRef(false)
   // Admin-controlled artist shares; a ref, so their arrival does not re-roll the current song.
   const shares = useRef(DEFAULT_SHARES)
@@ -214,11 +215,13 @@ export default function App() {
       <div className="hidden-player" ref={playerHost} aria-hidden="true" />
       {/* Genres differ between the two catalogs, so the genre filter resets with the language. */}
       {askName && <NicknameDialog text={t} current={who?.nickname ?? ''} onSave={rename} />}
+      {showBoard && <LeaderboardDialog text={t} player={who} onClose={() => setShowBoard(false)} />}
       <div className="who-bar">
         {who && <button className="who" onClick={() => setAskName(true)}>👤 {who.nickname}</button>}
-        <button className="who" onClick={() => window.confirm(t.resetScoreConfirm) && setStats(newStats())}>
-          ↺ {t.resetScore}
+        <button className="who" title={t.resetScore} onClick={() => window.confirm(t.resetScoreConfirm) && setStats(newStats())}>
+          ↺ <span className="label">{t.resetScore}</span>
         </button>
+        <button className="who" title={t.leaderboard} onClick={() => setShowBoard(true)}>🏆 <span className="label">{t.leaderboard}</span></button>
       </div>
       <a className="admin-link" href="/admin" title={t.admin} aria-label={t.admin}><ShieldIcon /></a>
       <button className="lang" onClick={() => update({ lang: lang === 'he' ? 'en' : 'he', genre: 'all' })}>
@@ -390,6 +393,65 @@ function NicknameDialog(props: { text: (typeof TEXT)[Lang]; current: string; onS
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder={text.nicknamePlaceholder} maxLength={24} autoFocus />
         <button className="next" disabled={!name.trim()}>{text.start}</button>
       </form>
+    </div>
+  )
+}
+
+const MEDALS = ['🥇', '🥈', '🥉']
+
+// The shared scoreboard, computed on the server from every player's finished rounds.
+function LeaderboardDialog(props: { text: (typeof TEXT)[Lang]; player: Player | null; onClose: () => void }) {
+  const { text } = props
+  const [period, setPeriod] = useState<Period>('today')
+  const [board, setBoard] = useState<Leaderboard | null | 'loading'>('loading')
+  useEffect(() => {
+    setBoard('loading')
+    fetchLeaderboard(period, props.player).then(setBoard)
+  }, [period])
+
+  return (
+    <div className="overlay" onClick={props.onClose}>
+      <div className="dialog board" onClick={(e) => e.stopPropagation()}>
+        <h2>🏆 {text.leaderboard}</h2>
+        <div className="pills">
+          {(['today', 'week', 'all'] as Period[]).map((p) => (
+            <button key={p} className={`pill d1 ${period === p ? 'on' : ''}`} onClick={() => setPeriod(p)}>{text.periods[p]}</button>
+          ))}
+        </div>
+        {board === 'loading' ? (
+          <span className="spinner" />
+        ) : !board ? (
+          <p>{text.unavailable}</p>
+        ) : (
+          <>
+            {board.top.length === 0 ? (
+              <p>{text.noScores}</p>
+            ) : (
+              <table>
+                <thead><tr><th>#</th><th>{text.player}</th><th>{text.roundsPlayed}</th><th>{text.correct}</th><th>{text.pointsHead}</th></tr></thead>
+                <tbody>
+                  {board.top.map((row, i) => (
+                    <tr key={i} className={row.me ? 'me' : ''}>
+                      <td>{MEDALS[i] ?? i + 1}</td><td>{row.nickname}</td><td>{row.rounds}</td><td>{row.wins}</td><td><b>{row.points.toLocaleString()}</b></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {board.winners.length > 0 && (
+              <>
+                <h3>{text.winners}</h3>
+                <ul className="winners">
+                  {board.winners.map((w) => (
+                    <li key={w.day}><span dir="ltr">{w.day.slice(8)}/{w.day.slice(5, 7)}</span><b>🥇 {w.nickname}</b><span>{text.points(w.points)}</span></li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </>
+        )}
+        <button className="skip" onClick={props.onClose}>{text.close}</button>
+      </div>
     </div>
   )
 }

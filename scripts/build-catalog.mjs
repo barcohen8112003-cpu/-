@@ -1,5 +1,6 @@
 // Builds src/data/songs.<lang>.json from YouTube playlists.
 // Usage: node --env-file=.env scripts/build-catalog.mjs [he|en]
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 
 const KEY = process.env.YOUTUBE_API_KEY
@@ -9,6 +10,13 @@ const API = 'https://www.googleapis.com/youtube/v3'
 const LANG = process.argv[2] ?? 'he'
 const CACHE = `scripts/.cache/playlists.${LANG}.json`
 const OUT = `src/data/songs.${LANG}.json`
+// How many official artist channels get their other uploads added (0 = off).
+const ARTIST_CHANNELS = LANG === 'en' ? 0 : 150
+const UPLOADS_PER_CHANNEL = 150
+// Uploads with fewer views than this are mostly not songs anyone could recognise.
+const MIN_CHANNEL_VIEWS = 5000
+// Keeps one prolific artist from crowding the catalog; their most-viewed songs stay.
+const MAX_SONGS_PER_ARTIST = 60
 const PLAYLISTS_PER_QUERY = 6
 const MAX_ITEMS_PER_PLAYLIST = 500
 
@@ -52,11 +60,20 @@ const QUERIES = LANG === 'en' ? [
 ]
 const ERA_ORDER = ['70s', '80s', '90s', '00s', '10s', '20s']
 
+// Every answer is kept on disk, so a rebuild, or a run cut short by the daily quota,
+// never pays for the same request twice. Delete scripts/.cache/api to refresh.
+const API_CACHE = 'scripts/.cache/api'
+await mkdir(API_CACHE, { recursive: true })
 async function yt(path, params) {
-  const url = `${API}/${path}?${new URLSearchParams({ ...params, key: KEY })}`
-  const res = await fetch(url)
+  const query = String(new URLSearchParams(params))
+  const cached = `${API_CACHE}/${createHash('sha1').update(`${path}?${query}`).digest('hex')}.json`
+  try {
+    return JSON.parse(await readFile(cached, 'utf8'))
+  } catch {}
+  const res = await fetch(`${API}/${path}?${query}&key=${KEY}`)
   const body = await res.json()
   if (!res.ok) throw new Error(`${path}: ${body.error?.message ?? res.status}`)
+  await writeFile(cached, JSON.stringify(body))
   return body
 }
 
@@ -79,7 +96,7 @@ async function findPlaylists() {
   return QUERIES.flatMap((query) => cache[query.q])
 }
 
-async function playlistVideoIds(playlistId) {
+async function playlistVideoIds(playlistId, limit = MAX_ITEMS_PER_PLAYLIST) {
   const ids = []
   let pageToken
   do {
@@ -92,7 +109,7 @@ async function playlistVideoIds(playlistId) {
     })
     ids.push(...body.items.map((item) => item.contentDetails.videoId))
     pageToken = body.nextPageToken
-  } while (pageToken && ids.length < MAX_ITEMS_PER_PLAYLIST)
+  } while (pageToken && ids.length < limit)
   return ids
 }
 
@@ -116,13 +133,15 @@ const HEBREW = /[א-ת]/
 // A title belongs to the catalog's language: Hebrew letters, or Latin script only.
 const inLanguage = (text) =>
   LANG === 'en' ? /[a-z]/i.test(text) && !/[^\u0000-ɏ‐-‧]/.test(text) : HEBREW.test(text)
-const REJECT = /\blive\b|לייב|חי באולפן|הופעה|בהופעה|קריוקי|karaoke|פלייבק|playback|רמיקס|remix|מחרוזת|cover|קאבר|מאש-?אפ|mashup|full album|האלבום המלא|אוסף|שעה של|פרק \d|טריילר|ראיון/i
+const REJECT = /\blive\b|לייב|חי באולפן|הופעה|בהופעה|קריוקי|karaoke|פלייבק|playback|רמיקס|remix|מחרוזת|cover|קאבר|מאש-?אפ|mashup|full album|האלבום המלא|אוסף|שעה של|פרק \d|טריילר|ראיון|כתבת|חדשות|טיזר|פרומו|מאחורי הקלעים|הצצה/i
 const NOISE = /הקליפ הרשמי|קליפ רשמי|וידאו רשמי|אודיו רשמי|official (music )?video|official audio|lyrics?( video)?|עם מילים|קליפ|אודיו|\bhd\b|\bhq\b|\b4k\b|prod\.? by.*$|להורדה.*$/gi
 
 const tidy = (s) => s.replace(/[“”״"]/g, '"').replace(/\s+/g, ' ').replace(/^[\s\-–—|:.,"']+|[\s\-–—|:.,"']+$/g, '').trim()
 const norm = (s) => s.toLowerCase().replace(/[֑-ׇ]/g, '').replace(/[^א-תa-z0-9]/g, '')
 
-function parseSong(video) {
+// `channelArtist` is set for videos taken from an artist's own channel, where the title
+// is often just the song name.
+function parseSong(video, channelArtist) {
   const channel = video.snippet.channelTitle
   const isTopic = / - Topic$/.test(channel)
   const raw = tidy(video.snippet.title.replace(/[([{][^)\]}]*[)\]}]/g, ' ').replace(NOISE, ' '))
@@ -135,7 +154,7 @@ function parseSong(video) {
     .filter((part) => HEBREW.test(part))
     .map((part) => tidy(part.replace(/[a-z][a-z'.]*/gi, ' ').replace(/[\])}]/g, ' ').replace(/\b(19|20)\d\d$/, '')))
     .filter(Boolean)
-  if (parts.length < 2) return null
+  if (parts.length < 2) return channelArtist && parts.length === 1 ? { artist: channelArtist, title: parts[0] } : null
   // "Song - Artist" uploads: trust the channel name when it matches one side.
   const channelKey = norm(channel)
   const artistFirst = !(channelKey && norm(parts[1]) === channelKey)
@@ -193,6 +212,42 @@ for (const artist of ARTISTS) {
 }
 
 const videos = await videoDetails([...tags.keys()])
+
+// Channels that belong to one artist: at least 3 of the songs found so far, nearly all
+// credited to the same name. Their remaining uploads are the artist's other songs.
+if (ARTIST_CHANNELS) {
+  const channels = new Map() // channelId -> { artist: songs }
+  for (const video of videos) {
+    if (/ - Topic$/.test(video.snippet.channelTitle) || !inLanguage(video.snippet.title)) continue
+    const artist = parseSong(video)?.artist
+    if (!artist) continue
+    const credits = channels.get(video.snippet.channelId) ?? {}
+    credits[artist] = (credits[artist] ?? 0) + 1
+    channels.set(video.snippet.channelId, credits)
+  }
+  const artistChannels = [...channels]
+    .map(([id, credits]) => {
+      const [artist, songs] = Object.entries(credits).sort((a, b) => b[1] - a[1])[0]
+      const total = Object.values(credits).reduce((sum, n) => sum + n, 0)
+      return { id, artist, songs, share: songs / total }
+    })
+    .filter((channel) => channel.songs >= 3 && channel.share >= 0.8)
+    .sort((a, b) => b.songs - a.songs)
+    .slice(0, ARTIST_CHANNELS)
+
+  const added = []
+  for (const channel of artistChannels) {
+    // A channel's uploads playlist has the channel id with "UU" in place of "UC".
+    const ids = await playlistVideoIds('UU' + channel.id.slice(2), UPLOADS_PER_CHANNEL)
+    for (const id of ids) {
+      if (tags.has(id)) continue
+      tags.set(id, { eras: {}, genres: new Set(), channelArtist: channel.artist })
+      added.push(id)
+    }
+  }
+  console.log(`${added.length} more videos from ${artistChannels.length} artist channels`)
+  videos.push(...(await videoDetails(added)))
+}
 const candidates = []
 for (const video of videos) {
   const dur = seconds(video.contentDetails.duration)
@@ -203,10 +258,12 @@ for (const video of videos) {
   if (dur < 90 || dur > 420) continue
   if (!inLanguage(video.snippet.title) || REJECT.test(video.snippet.title)) continue
 
-  const parsed = parseSong(video)
+  const tag = tags.get(video.id)
+  // An artist's channel also carries interviews and vlogs; only its music videos count.
+  if (tag.channelArtist && video.snippet.categoryId !== '10') continue
+  const parsed = parseSong(video, tag.channelArtist)
   if (!parsed || !inLanguage(parsed.title) || parsed.title.length > 40 || parsed.artist.length > 40) continue
 
-  const tag = tags.get(video.id)
   // A search for an artist also returns other people's videos that merely mention the name.
   // Duos are credited in several ways ("נס וסטילה", "נס X סטילה", "נס & סטילה"), so each
   // name is matched on its own and the credit is unified to the searched spelling.
@@ -224,6 +281,7 @@ for (const video of videos) {
     id: video.id, title: parsed.title, artist: parsed.artist, era,
     genres: [...tag.genres], views: +video.statistics.viewCount || 0, dur,
   }
+  if (tag.channelArtist && song.views < MIN_CHANNEL_VIEWS) continue
   candidates.push(song)
 }
 
@@ -272,7 +330,10 @@ for (const song of merged) song.artist = hebrewName.get(song.artist) ?? song.art
 
 // Difficulty 1 (easy) .. 5 (impossible): view-count rank inside the song's own era,
 // so old songs are not all "hard" just because YouTube came later.
-const songs = merged
+const perArtist = Map.groupBy(merged, (song) => norm(song.artist))
+const songs = [...perArtist.values()].flatMap((group) =>
+  group.sort((a, b) => b.views - a.views).slice(0, MAX_SONGS_PER_ARTIST),
+)
 const groups = Map.groupBy(songs, (song) => song.era ?? 'none')
 for (const group of groups.values()) {
   group.sort((a, b) => b.views - a.views)

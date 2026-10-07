@@ -100,6 +100,20 @@ button:disabled { cursor: default; opacity: 0.5; }
 .dialog input { padding: 11px 14px; background: var(--bg); border: 1px solid #27322c; border-radius: 10px; outline: none; }
 .dialog input:focus { border-color: var(--green); }
 
+.dialog.board { max-width: 460px; max-height: 90vh; overflow-y: auto; }
+.board .pills { justify-content: flex-start; }
+.board .spinner { align-self: center; border-color: rgba(30, 215, 96, 0.25); border-top-color: var(--green); }
+.board table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.board th, .board td { padding: 7px 6px; border-bottom: 1px solid var(--line); text-align: start; }
+.board th { font-size: 12px; color: var(--muted); }
+.board td b { color: var(--green); }
+.board tr.me td { background: var(--green-dim); }
+.board h3 { margin: 6px 0 0; font-size: 15px; }
+.winners { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 14px; }
+.winners li { display: flex; gap: 10px; }
+.winners b { flex: 1; }
+.winners span { color: var(--muted); }
+
 /* Side panels */
 .panel { display: flex; flex-direction: column; gap: 10px; }
 .heading { margin-top: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); }
@@ -226,6 +240,12 @@ input[type='range'] { width: 100%; accent-color: var(--green); }
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; gap: 28px; padding: 20px 16px 40px; align-items: start; }
   .app::before { display: none; }
+  /* Room for the top bar; its two action buttons shrink to their icons. */
+  .app { padding-top: 64px; }
+  .app > .who-bar { inset-inline-start: 12px; }
+  .app > .lang { inset-inline-end: 12px; }
+  .who { max-width: 120px; padding-inline: 10px; }
+  .who .label { display: none; }
   .stage { order: -1; }
   .logo { margin-bottom: 8px; font-size: 40px; }
   .panel { max-width: 420px; width: 100%; margin: 0 auto; }

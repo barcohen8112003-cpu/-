@@ -11,6 +11,8 @@ const LANG_NAMES: Record<Lang, string> = { he: 'עברית', en: 'אנגלית' 
 
 const percent = (part: number, whole: number) => (whole ? (part / whole) * 100 : 0)
 const show = (value: number) => `${value.toFixed(1)}%`
+const when = (iso: string) =>
+  new Date(iso).toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem', dateStyle: 'short', timeStyle: 'short' })
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date())
 
 export default function Admin() {
@@ -104,6 +106,22 @@ export default function Admin() {
         </table>
       </section>
 
+      <section>
+        <h2>שחקנים</h2>
+        <table>
+          <thead><tr><th>כינוי</th><th>נקודות</th><th>סיבובים</th><th>כניסות</th><th>הצטרף</th><th>סיבוב אחרון</th></tr></thead>
+          <tbody>
+            {stats.players.map((p, i) => (
+              <tr key={i}>
+                <td>{p.nickname}</td><td>{p.points.toLocaleString('he')}</td><td>{p.rounds}</td><td>{p.visits}</td>
+                <td>{when(p.joined)}</td><td>{p.last_round ? when(p.last_round) : '—'}</td>
+              </tr>
+            ))}
+            {!stats.players.length && <tr><td colSpan={6} className="none">עדיין אין שחקנים</td></tr>}
+          </tbody>
+        </table>
+      </section>
+
       <ShareEditor stats={stats} password={password} onSaved={(shares) => setStats({ ...stats, shares })} />
 
       <section>
@@ -113,7 +131,7 @@ export default function Admin() {
           <tbody>
             {stats.recent.map((r, i) => (
               <tr key={i}>
-                <td>{new Date(r.at).toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem', dateStyle: 'short', timeStyle: 'short' })}</td>
+                <td>{when(r.at)}</td>
                 <td>{r.nickname ?? '—'}</td>
                 <td>{r.title}</td>
                 <td>{r.artist}</td>
