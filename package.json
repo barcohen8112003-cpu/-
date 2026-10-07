@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "start": "node server.mjs",
-    "api": "node --env-file=.env server.mjs",
+    "api": "node --env-file=.env server.mjs --local-db",
     "catalog": "node --env-file=.env scripts/build-catalog.mjs he",
     "catalog:en": "node --env-file=.env scripts/build-catalog.mjs en"
   },

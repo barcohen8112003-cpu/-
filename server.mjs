@@ -76,6 +76,7 @@ async function upsertPlayer(body) {
 }
 
 async function getShares() {
+  if (!db) return defaultShares
   const { rows } = await db.query("SELECT value FROM settings WHERE key = 'shares'")
   return rows.length ? JSON.parse(rows[0].value) : defaultShares
 }
@@ -184,7 +185,9 @@ createServer(async (req, res) => {
   try {
     const route = routes[`${req.method} ${pathname}`]
     if (!route) throw new HttpError(404, 'Not found')
-    body = await route(req)
+    // Without a database the game still runs: tracking is dropped and the admin panel says why.
+    if (!db && pathname.startsWith('/api/admin/')) throw new HttpError(503, 'DATABASE_URL is not configured on the server')
+    body = db || pathname === '/api/config' ? await route(req) : {}
   } catch (error) {
     status = error.status ?? 500
     body = { error: error.status ? error.message : 'Server error' }

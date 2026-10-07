@@ -1,5 +1,7 @@
-// Opens the database: Postgres when DATABASE_URL is set (production), otherwise an
-// embedded Postgres stored on disk, so the same SQL runs on a developer machine.
+// Opens the database: Postgres when DATABASE_URL is set (production). With --local-db
+// (npm run api) an embedded Postgres stored on disk is used instead, so the same SQL runs
+// on a developer machine. With neither there is no database and null is returned: the
+// embedded one needs more memory than a small hosting instance has.
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS players (
@@ -39,8 +41,11 @@ export async function openDatabase() {
     const external = new URL(url).hostname.includes('.')
     const pool = new pg.Pool({ connectionString: url, ssl: external ? { rejectUnauthorized: false } : false, max: 5 })
     db = { query: (sql, params) => pool.query(sql, params), exec: (sql) => pool.query(sql) }
+  } else if (!process.argv.includes('--local-db')) {
+    console.warn('DATABASE_URL is not set: tracking and the admin panel are off until it is configured.')
+    return null
   } else {
-    console.warn('DATABASE_URL is not set: using a local embedded database (data stays on this machine only).')
+    console.warn('Using a local embedded database (data stays on this machine only).')
     const { PGlite } = await import('@electric-sql/pglite')
     const { mkdir } = await import('node:fs/promises')
     // The cache folder is not in git, so it does not exist on a fresh checkout.
