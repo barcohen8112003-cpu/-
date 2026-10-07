@@ -11,7 +11,7 @@ const LANG = process.argv[2] ?? 'he'
 const CACHE = `scripts/.cache/playlists.${LANG}.json`
 const OUT = `src/data/songs.${LANG}.json`
 // How many official artist channels get their other uploads added (0 = off).
-const ARTIST_CHANNELS = LANG === 'en' ? 0 : 150
+const ARTIST_CHANNELS = 150
 const UPLOADS_PER_CHANNEL = 150
 // Uploads with fewer views than this are mostly not songs anyone could recognise.
 const MIN_CHANNEL_VIEWS = 5000
@@ -39,6 +39,14 @@ const QUERIES = LANG === 'en' ? [
   { era: '00s', genre: 'pop', q: '2000s pop hits throwback' },
   { era: '10s', q: 'top hits 2015 2016 2017' },
   { era: '20s', q: 'top hits 2020 2021 2022' },
+  { genre: 'rnb', q: '90s r&b hits' },
+  { genre: 'rnb', q: 'r&b hits 2010s 2020s' },
+  { genre: 'dance', q: '2000s dance club hits' },
+  { genre: 'dance', q: 'house music classics hits' },
+  { genre: 'rock', q: 'rock hits 2000s 2010s' },
+  { genre: 'rock', era: '80s', q: '80s rock anthems' },
+  { genre: 'hiphop', q: '2010s hip hop hits' },
+  { genre: 'hiphop', q: 'rap hits 2020s' },
 ] : [
   { era: '70s', q: 'להיטים ישראלים שנות ה-60 וה-70' },
   { era: '80s', q: 'להיטים ישראלים שנות ה-80' },
@@ -57,6 +65,12 @@ const QUERIES = LANG === 'en' ? [
   { era: '00s', q: 'מצעד הפזמונים השנתי 2005 2008' },
   { genre: 'mizrahi', q: 'זמר מזרחי נוסטלגיה קלאסיקות' },
   { genre: 'classic', q: 'להקות צבאיות השירים הגדולים' },
+  { genre: 'pop', q: 'פופ ישראלי 2020 2021 2022 2023' },
+  { genre: 'pop', q: 'פופ ישראלי שנות ה-2000 וה-2010' },
+  { genre: 'hiphop', q: 'ראפ ישראלי השירים הכי טובים' },
+  { genre: 'hiphop', q: 'היפ הופ ישראלי קלאסיקות' },
+  { genre: 'classic', q: 'שירי ארץ ישראל נוסטלגיה' },
+  { genre: 'classic', q: 'שירים עבריים ישנים שנות ה-50 וה-60' },
 ]
 const ERA_ORDER = ['70s', '80s', '90s', '00s', '10s', '20s']
 
@@ -164,8 +178,9 @@ function parseSong(video, channelArtist) {
 
 function parseEnglish(raw, video) {
   const parts = raw.split(/\s+[-–—|]\s+|\s*[–—|]\s*/).map(tidy).filter(Boolean)
-  // Official artist channels often title a video with the song name alone.
-  if (parts.length < 2 && video.snippet.categoryId !== '10') return null
+  // An artist's VEVO channel often titles a video with the song name alone. Other channels
+  // are not trusted for this: a record label's channel would be credited as the artist.
+  if (parts.length < 2 && !/VEVO$/i.test(video.snippet.channelTitle)) return null
   const [artist, title] =
     parts.length < 2 ? [video.snippet.channelTitle.replace(/\s*(VEVO|Official)$/i, ''), parts[0]] : parts
   if (!artist || !title) return null
@@ -331,6 +346,22 @@ for (const song of merged) song.artist = hebrewName.get(song.artist) ?? song.art
 // Difficulty 1 (easy) .. 5 (impossible): view-count rank inside the song's own era,
 // so old songs are not all "hard" just because YouTube came later.
 const perArtist = Map.groupBy(merged, (song) => norm(song.artist))
+
+// Genre is decided per artist. Playlists found by search are loose about genre, and most
+// songs come from sources that say nothing about it, so an artist's songs all take the
+// genres that at least 40% of their tagged songs carry (two at most). A song by an artist
+// with a single tagged song keeps whatever its playlist said.
+for (const group of perArtist.values()) {
+  const tagged = group.filter((song) => song.genres.length)
+  if (tagged.length < 2) continue
+  const votes = Object.entries(Object.groupBy(tagged.flatMap((song) => song.genres), (genre) => genre))
+  const genres = votes
+    .filter(([, list]) => list.length >= tagged.length * 0.4)
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, 2)
+    .map(([genre]) => genre)
+  for (const song of group) song.genres = genres
+}
 const songs = [...perArtist.values()].flatMap((group) =>
   group.sort((a, b) => b.views - a.views).slice(0, MAX_SONGS_PER_ARTIST),
 )
