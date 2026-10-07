@@ -202,26 +202,45 @@ for (const playlist of playlists) {
 
 // Playlists under-represent today's biggest names, so their most-viewed videos are added
 // directly. A video search costs 100 quota units, so each artist's result is cached.
-const ARTISTS = LANG === 'en' ? [] : [
+// Artists searched for a thin genre; everything credited to them is tagged with it.
+const GENRE_ARTISTS = LANG === 'en' ? {} : {
+  hiphop: [
+    'סאבלימינל', 'הצל', 'נצ\'י נצ\'', 'שב"ק ס', 'כהן@מושון', 'פלד', 'איזי', 'ג\'ימבו ג\'יי', 'שקל', 'מיכאל סוויסה',
+    'דודו פארוק', 'אורטגה', 'טדי נגוסה', 'לוקץ\'', 'איתי גלו', 'מוקי', 'זי קיי', 'סטטיק',
+  ],
+  rock: [
+    'כנסיית השכל', 'אביב גפן', 'מוניקה סקס', 'היהודים', 'טיפקס', 'רוקפור', 'ברי סחרוף', 'אהוד בנאי', 'אביתר בנאי',
+    'בית הבובות', 'סינרגיה', 'התקווה 6', 'נקמת הטרקטור', 'החברים של נטאשה', 'תיסלם', 'בנזין', 'ג\'ירפות',
+    'רמי פורטיס', 'כוורת', 'היי פייב',
+  ],
+}
+const genreOf = (artist) => Object.keys(GENRE_ARTISTS).find((genre) => GENRE_ARTISTS[genre].includes(artist))
+const BASE_ARTISTS = LANG === 'en' ? [] : [
   'אודיה', 'אופק אדנק', 'נועה קירל', 'עומר אדם', 'עדן בן זקן', 'עדן חסון', 'אושר כהן', 'ששון איפרם שאולוב',
   'אגם בוחבוט', 'אנה זק', 'סטטיק ובן אל תבורי', 'אייל גולן', 'שרית חדד', 'עידן רייכל', 'חנן בן ארי', 'ישי ריבו',
   'נתן גושן', 'טונה', 'רביד פלוטניק', 'מרגי', 'איתי לוי', 'פאר טסי', 'משה פרץ', 'דודו אהרון', 'ליאור נרקיס',
   'עידן עמדי', 'נס וסטילה', 'יסמין מועלם', 'בניה ברבי', 'עדן גולן', 'יובל רפאל', 'שחר סאול', 'אליעד',
   'נרקיס', 'קרן פלס', 'שלמה ארצי',
 ]
+const ARTISTS = [...BASE_ARTISTS, ...Object.values(GENRE_ARTISTS).flat()]
 const artistNames = (artist) => artist.split(' ').map((name, i) => norm(i ? name.replace(/^ו/, '') : name))
 const ARTIST_CACHE =`scripts/.cache/artists.${LANG}.json`
 const artistVideos = await readFile(ARTIST_CACHE, 'utf8').then(JSON.parse, () => ({}))
 for (const artist of ARTISTS) {
   if (!artistVideos[artist]) {
+    // Running out of quota here only postpones the remaining artists to the next run.
     const body = await yt('search', {
       part: 'id', type: 'video', q: artist, maxResults: 50, order: 'viewCount', regionCode: 'IL', videoCategoryId: '10',
-    })
+    }).catch((err) => console.warn(`  not searched yet (${artist}): ${err.message.slice(0, 60)}`))
+    if (!body) continue
     artistVideos[artist] = body.items.map((item) => item.id.videoId)
     await writeFile(ARTIST_CACHE, JSON.stringify(artistVideos))
   }
   for (const id of artistVideos[artist]) {
-    if (!tags.has(id)) tags.set(id, { eras: {}, genres: new Set(), artistQuery: artist })
+    const tag = tags.get(id) ?? { eras: {}, genres: new Set(), artistQuery: artist }
+    // The genre applies only once the video turns out to be credited to this artist.
+    if (genreOf(artist)) (tag.hints ??= []).push({ artist, genre: genreOf(artist) })
+    tags.set(id, tag)
   }
   console.log(`${artistVideos[artist].length.toString().padStart(4)}  ${artist}`)
 }
@@ -286,6 +305,9 @@ for (const video of videos) {
   const known = ARTISTS.find((artist) => credit === artistNames(artist).join(''))
   if (known) parsed.artist = known
   if (tag.artistQuery && !artistNames(tag.artistQuery).every((name) => credit.includes(name))) continue
+  for (const hint of tag.hints ?? []) {
+    if (artistNames(hint.artist).every((name) => credit.includes(name))) tag.genres.add(hint.genre)
+  }
   const year = +video.snippet.publishedAt.slice(0, 4)
   const voted = Object.entries(tag.eras).sort((a, b) => b[1] - a[1])[0]?.[0]
   // Upload date only tells the release decade for songs that came out in the YouTube era.
