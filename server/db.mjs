@@ -42,6 +42,9 @@ export async function openDatabase() {
   } else {
     console.warn('DATABASE_URL is not set: using a local embedded database (data stays on this machine only).')
     const { PGlite } = await import('@electric-sql/pglite')
+    const { mkdir } = await import('node:fs/promises')
+    // The cache folder is not in git, so it does not exist on a fresh checkout.
+    await mkdir('scripts/.cache', { recursive: true })
     const lite = new PGlite('scripts/.cache/pglite')
     db = { query: (sql, params) => lite.query(sql, params), exec: (sql) => lite.exec(sql) }
   }
