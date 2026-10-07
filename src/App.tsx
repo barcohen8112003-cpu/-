@@ -15,13 +15,25 @@ const SONG_BONUS = [50, 40, 30, 20, 10]
 
 type Outcome = 'both' | 'artist' | 'lost'
 type Played = { id: string; title: string; artist: string; outcome: Outcome; points: number }
-type Stats = { score: number; history: Played[] } // history is newest first
+// history is newest first; the two timestamps (ms) decide when the score expires
+type Stats = { score: number; history: Played[]; startedAt: number; activeAt: number }
+
+// The score and history start over 24 hours after they began, or after an hour away.
+const SCORE_LIFETIME_MS = 24 * 60 * 60 * 1000
+const IDLE_LIMIT_MS = 60 * 60 * 1000
+const newStats = (): Stats => ({ score: 0, history: [], startedAt: Date.now(), activeAt: Date.now() })
+// Returns the stats as they stand now: unchanged, or started over when they have expired.
+function current(stats: Stats): Stats {
+  const now = Date.now()
+  const expired = now - stats.startedAt > SCORE_LIFETIME_MS || now - stats.activeAt > IDLE_LIMIT_MS
+  return expired ? newStats() : stats
+}
 
 function loadStats(): Stats {
   try {
-    return { score: 0, history: [], ...JSON.parse(localStorage.getItem(STATS_KEY) ?? '{}') }
+    return current({ ...newStats(), ...JSON.parse(localStorage.getItem(STATS_KEY) ?? '{}') })
   } catch {
-    return { score: 0, history: [] }
+    return newStats()
   }
 }
 
@@ -62,6 +74,13 @@ export default function App() {
       localStorage.setItem(STATS_KEY, JSON.stringify(stats))
     } catch {}
   }, [stats])
+  // Coming back to the tab counts as a visit: an expired score is cleared, a live one stays alive.
+  useEffect(() => {
+    const touch = () => document.hidden || setStats((prev) => ({ ...current(prev), activeAt: Date.now() }))
+    touch()
+    document.addEventListener('visibilitychange', touch)
+    return () => document.removeEventListener('visibilitychange', touch)
+  }, [])
   const [ready, setReady] = useState(false)
   const [playing, setPlaying] = useState(false)
 
@@ -159,7 +178,10 @@ export default function App() {
     const artistStage = artistClip !== null ? STAGES.indexOf(artistClip) : outcome === 'both' ? stage : -1
     const points = (ARTIST_POINTS[artistStage] ?? 0) + (outcome === 'both' ? SONG_BONUS[stage] : 0)
     const played = { id: song!.id, title: song!.title, artist: song!.artist, outcome, points }
-    setStats((prev) => ({ score: prev.score + points, history: [played, ...prev.history].slice(0, HISTORY_LIMIT) }))
+    setStats((stale) => {
+      const prev = current(stale)
+      return { ...prev, score: prev.score + points, history: [played, ...prev.history].slice(0, HISTORY_LIMIT), activeAt: Date.now() }
+    })
     if (who) trackRound(who, song!, lang, diff, outcome, points)
     setResult(outcome)
     player.current!.play(Infinity)
@@ -327,7 +349,7 @@ export default function App() {
         <div className="heading history-head">
           {t.history}
           {stats.history.length > 0 && (
-            <button className="link" onClick={() => setStats({ score: 0, history: [] })}>{t.reset}</button>
+            <button className="link" onClick={() => setStats(newStats())}>{t.reset}</button>
           )}
         </div>
         {stats.history.length === 0 ? (
