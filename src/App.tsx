@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { DEFAULT_SHARES, fetchShares, loadPlayer, savePlayer, trackRound, trackVisit } from './api'
 import { TEXT, type Lang } from './i18n'
 import { SnippetPlayer } from './player'
 import { catalogs, isArtistOf, isSameSong, pickSong, searchArtists, searchSongs, type Song } from './songs'
@@ -21,6 +22,15 @@ function loadStats(): Stats {
     return { score: 0, history: [], ...JSON.parse(localStorage.getItem(STATS_KEY) ?? '{}') }
   } catch {
     return { score: 0, history: [] }
+  }
+}
+
+const SEEN_KEY = 'song-game-seen'
+function loadSeen(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]'))
+  } catch {
+    return new Set()
   }
 }
 
@@ -55,9 +65,21 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [playing, setPlaying] = useState(false)
 
+  // Who is playing: a nickname and a random id, kept in this browser.
+  const [who, setWho] = useState(loadPlayer)
+  const [askName, setAskName] = useState(!who)
+  const visited = useRef(false)
+  // Admin-controlled artist shares; a ref, so their arrival does not re-roll the current song.
+  const shares = useRef(DEFAULT_SHARES)
+  useEffect(() => {
+    fetchShares().then((loaded) => loaded && (shares.current = loaded))
+  }, [])
+
   const playerHost = useRef<HTMLDivElement>(null)
   const player = useRef<SnippetPlayer | null>(null)
-  const seen = useRef(new Set<string>())
+  // Songs already played in this browser. Kept across visits, so a song does not come
+  // back until everything else in the chosen filter has been played.
+  const seen = useRef(loadSeen())
 
   const update = (patch: Partial<Settings>) => setSettings((prev) => ({ ...prev, ...patch }))
   useEffect(() => {
@@ -67,6 +89,17 @@ export default function App() {
   }, [settings])
 
   const { lang, genre, era, diff, mode, volume } = settings
+  useEffect(() => {
+    if (!who || visited.current) return
+    visited.current = true
+    trackVisit(who, lang)
+  }, [who, lang])
+  const rename = (nickname: string) => {
+    const next = savePlayer(nickname, who)
+    if (visited.current) trackVisit(next, lang, true)
+    setWho(next)
+    setAskName(false)
+  }
   const t = TEXT[lang]
   useEffect(() => {
     document.documentElement.lang = lang
@@ -88,14 +121,17 @@ export default function App() {
       pool.forEach((s) => seen.current.delete(s.id))
       fresh = pool
     }
-    const pick = pickSong(fresh)
+    const pick = pickSong(fresh, shares.current[lang])
     if (pick) seen.current.add(pick.id)
+    try {
+      localStorage.setItem(SEEN_KEY, JSON.stringify([...seen.current]))
+    } catch {}
     setSong(pick)
     setStage(0)
     setMisses([])
     setResult(null)
     setArtistClip(null)
-  }, [pool])
+  }, [pool, lang])
   useEffect(nextSong, [nextSong])
 
   const nextSongRef = useRef(nextSong)
@@ -124,6 +160,7 @@ export default function App() {
     const points = (ARTIST_POINTS[artistStage] ?? 0) + (outcome === 'both' ? SONG_BONUS[stage] : 0)
     const played = { id: song!.id, title: song!.title, artist: song!.artist, outcome, points }
     setStats((prev) => ({ score: prev.score + points, history: [played, ...prev.history].slice(0, HISTORY_LIMIT) }))
+    if (who) trackRound(who, song!, lang, diff, outcome, points)
     setResult(outcome)
     player.current!.play(Infinity)
   }
@@ -154,6 +191,8 @@ export default function App() {
     <div className="app">
       <div className="hidden-player" ref={playerHost} aria-hidden="true" />
       {/* Genres differ between the two catalogs, so the genre filter resets with the language. */}
+      {askName && <NicknameDialog text={t} current={who?.nickname ?? ''} onSave={rename} />}
+      {who && <button className="who" onClick={() => setAskName(true)}>👤 {who.nickname}</button>}
       <button className="lang" onClick={() => update({ lang: lang === 'he' ? 'en' : 'he', genre: 'all' })}>
         🌐 {t.switchTo}
       </button>
@@ -308,6 +347,21 @@ export default function App() {
           </ul>
         )}
       </aside>
+    </div>
+  )
+}
+
+function NicknameDialog(props: { text: (typeof TEXT)[Lang]; current: string; onSave: (nickname: string) => void }) {
+  const [name, setName] = useState(props.current)
+  const { text } = props
+  return (
+    <div className="overlay">
+      <form className="dialog" onSubmit={(e) => (e.preventDefault(), name.trim() && props.onSave(name.trim()))}>
+        <h2>{text.nicknameTitle}</h2>
+        <p>{text.nicknameHint}</p>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder={text.nicknamePlaceholder} maxLength={24} autoFocus />
+        <button className="next" disabled={!name.trim()}>{text.start}</button>
+      </form>
     </div>
   )
 }

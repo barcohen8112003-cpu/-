@@ -9,10 +9,10 @@ const API = 'https://www.googleapis.com/youtube/v3'
 const LANG = process.argv[2] ?? 'he'
 const CACHE = `scripts/.cache/playlists.${LANG}.json`
 const OUT = `src/data/songs.${LANG}.json`
-const PLAYLISTS_PER_QUERY = 3
-const MAX_ITEMS_PER_PLAYLIST = 200
+const PLAYLISTS_PER_QUERY = 6
+const MAX_ITEMS_PER_PLAYLIST = 500
 
-// Each query tags the songs it finds with an era or a genre.
+// Each query tags the songs it finds with an era and/or a genre; untagged queries only add songs.
 const QUERIES = LANG === 'en' ? [
   { era: '70s', q: 'greatest hits of the 60s and 70s' },
   { era: '80s', q: '80s greatest hits' },
@@ -25,6 +25,12 @@ const QUERIES = LANG === 'en' ? [
   { genre: 'hiphop', q: 'hip hop rap greatest hits' },
   { genre: 'dance', q: 'best dance EDM hits of all time' },
   { genre: 'rnb', q: 'r&b soul greatest hits' },
+  { q: 'greatest songs of all time' },
+  { era: '70s', genre: 'dance', q: '70s disco hits' },
+  { era: '90s', genre: 'pop', q: '90s pop hits' },
+  { era: '00s', genre: 'pop', q: '2000s pop hits throwback' },
+  { era: '10s', q: 'top hits 2015 2016 2017' },
+  { era: '20s', q: 'top hits 2020 2021 2022' },
 ] : [
   { era: '70s', q: 'להיטים ישראלים שנות ה-60 וה-70' },
   { era: '80s', q: 'להיטים ישראלים שנות ה-80' },
@@ -37,6 +43,12 @@ const QUERIES = LANG === 'en' ? [
   { genre: 'pop', q: 'פופ ישראלי להיטים' },
   { genre: 'hiphop', q: 'היפ הופ ראפ ישראלי' },
   { genre: 'classic', q: 'שירי ארץ ישראל הישנה והטובה' },
+  { q: 'השירים הישראלים הגדולים בכל הזמנים' },
+  { q: 'שירים ישראלים שקטים ויפים' },
+  { era: '90s', q: 'מוזיקה ישראלית שנות התשעים' },
+  { era: '00s', q: 'מצעד הפזמונים השנתי 2005 2008' },
+  { genre: 'mizrahi', q: 'זמר מזרחי נוסטלגיה קלאסיקות' },
+  { genre: 'classic', q: 'להקות צבאיות השירים הגדולים' },
 ]
 const ERA_ORDER = ['70s', '80s', '90s', '00s', '10s', '20s']
 
@@ -48,26 +60,23 @@ async function yt(path, params) {
   return body
 }
 
-// Playlist search costs 100 quota units per call, so the result is cached on disk.
+// Playlist search costs 100 quota units per call, so each query's result is cached on disk.
 async function findPlaylists() {
-  try {
-    return JSON.parse(await readFile(CACHE, 'utf8'))
-  } catch {}
-  const found = []
+  const cache = await readFile(CACHE, 'utf8').then(JSON.parse, () => ({}))
+  await mkdir('scripts/.cache', { recursive: true })
   for (const query of QUERIES) {
+    if (cache[query.q]) continue
     const body = await yt('search', {
-      part: 'snippet', type: 'playlist', maxResults: 10, q: query.q,
+      part: 'snippet', type: 'playlist', maxResults: 15, q: query.q,
       ...(LANG === 'en' ? { regionCode: 'US', relevanceLanguage: 'en' } : { regionCode: 'IL', relevanceLanguage: 'he' }),
     })
-    const picked = body.items.slice(0, PLAYLISTS_PER_QUERY).map((item) => ({
+    cache[query.q] = body.items.slice(0, PLAYLISTS_PER_QUERY).map((item) => ({
       id: item.id.playlistId, name: item.snippet.title, era: query.era, genre: query.genre,
     }))
-    console.log(`${query.q}:`, picked.map((p) => p.name).join(' | '))
-    found.push(...picked)
+    console.log(`${query.q}:`, cache[query.q].map((p) => p.name).join(' | '))
+    await writeFile(CACHE, JSON.stringify(cache, null, 2))
   }
-  await mkdir('scripts/.cache', { recursive: true })
-  await writeFile(CACHE, JSON.stringify(found, null, 2))
-  return found
+  return QUERIES.flatMap((query) => cache[query.q])
 }
 
 async function playlistVideoIds(playlistId) {
@@ -76,7 +85,11 @@ async function playlistVideoIds(playlistId) {
   do {
     const body = await yt('playlistItems', {
       part: 'contentDetails', playlistId, maxResults: 50, ...(pageToken && { pageToken }),
-    }).catch((err) => (console.warn(`  skipped ${playlistId}: ${err.message}`), { items: [] }))
+    }).catch((err) => {
+      if (/quota/i.test(err.message)) throw err
+      console.warn(`  skipped ${playlistId}: ${err.message}`)
+      return { items: [] }
+    })
     ids.push(...body.items.map((item) => item.contentDetails.videoId))
     pageToken = body.nextPageToken
   } while (pageToken && ids.length < MAX_ITEMS_PER_PLAYLIST)

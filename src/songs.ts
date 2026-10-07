@@ -82,16 +82,36 @@ export function searchArtists(lang: Lang, query: string, limit = 7): string[] {
 // Any one of the credited performers counts.
 export const isArtistOf = (name: string, song: Song) => normalize(song.artist).includes(normalize(name))
 
-// Artists that should come up less often than their share of the catalog: each of their
-// songs is drawn with this weight instead of 1.
-const RARER: Record<string, number> = { 'אושר כהן': 1 / 3 }
-const rarer = Object.entries(RARER).map(([name, weight]) => ({ key: normalize(name), weight }))
-const weightOf = (song: Song) => rarer.find((r) => normalize(song.artist).includes(r.key))?.weight ?? 1
+// How many catalog songs each performer has, most first (the admin panel lists these).
+export const artistCounts = (lang: Lang) => artists[lang].map(({ name, songs }) => ({ name, songs }))
 
-export function pickSong(pool: Song[]): Song | null {
-  const weights = pool.map(weightOf)
-  let roll = Math.random() * weights.reduce((sum, weight) => sum + weight, 0)
-  return pool.find((_, i) => (roll -= weights[i]) < 0) ?? pool[pool.length - 1] ?? null
+// An artist's share can be raised to at most this many times their natural share of the
+// pool, so a target set for a big catalog cannot make two songs repeat endlessly in a small one.
+const BOOST_CAP = 5
+
+// Draws a song so that each artist in `shares` (percent of rounds) comes up at that rate;
+// everyone else splits what is left evenly per song.
+export function pickSong(pool: Song[], shares: Record<string, number> = {}): Song | null {
+  if (!pool.length) return null
+  let rest = pool
+  const buckets: { songs: Song[]; share: number }[] = []
+  for (const [name, percent] of Object.entries(shares)) {
+    const key = normalize(name)
+    const own = rest.filter((song) => normalize(song.artist).includes(key))
+    if (!own.length) continue
+    rest = rest.filter((song) => !own.includes(song))
+    buckets.push({ songs: own, share: Math.min(percent / 100, (own.length / pool.length) * BOOST_CAP) })
+  }
+  const total = buckets.reduce((sum, bucket) => sum + bucket.share, 0)
+  // With nobody left to take the remainder, or targets above 100%, the targets are scaled to fit.
+  const scale = !rest.length || total > 1 ? 1 / total : 1
+  const any = (list: Song[]) => list[Math.floor(Math.random() * list.length)]
+
+  let roll = Math.random()
+  for (const bucket of buckets) {
+    if ((roll -= bucket.share * scale) < 0) return any(bucket.songs)
+  }
+  return any(rest.length ? rest : pool)
 }
 
 // The same song may exist as several uploads, so a matching title counts.
