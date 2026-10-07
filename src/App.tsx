@@ -214,7 +214,13 @@ export default function App() {
       <div className="hidden-player" ref={playerHost} aria-hidden="true" />
       {/* Genres differ between the two catalogs, so the genre filter resets with the language. */}
       {askName && <NicknameDialog text={t} current={who?.nickname ?? ''} onSave={rename} />}
-      {who && <button className="who" onClick={() => setAskName(true)}>👤 {who.nickname}</button>}
+      <div className="who-bar">
+        {who && <button className="who" onClick={() => setAskName(true)}>👤 {who.nickname}</button>}
+        <button className="who" onClick={() => window.confirm(t.resetScoreConfirm) && setStats(newStats())}>
+          ↺ {t.resetScore}
+        </button>
+      </div>
+      <a className="admin-link" href="/admin" title={t.admin} aria-label={t.admin}><ShieldIcon /></a>
       <button className="lang" onClick={() => update({ lang: lang === 'he' ? 'en' : 'he', genre: 'all' })}>
         🌐 {t.switchTo}
       </button>
@@ -431,6 +437,11 @@ function GuessBox<T>(props: {
   )
 }
 
+const ShieldIcon = () => (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+    <path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z" />
+  </svg>
+)
 const PlayIcon = () => (
   <svg viewBox="0 0 24 24" width="44" height="44"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
 )
