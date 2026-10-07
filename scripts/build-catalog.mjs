@@ -1,0 +1,273 @@
+// Builds src/data/songs.<lang>.json from YouTube playlists.
+// Usage: node --env-file=.env scripts/build-catalog.mjs [he|en]
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+
+const KEY = process.env.YOUTUBE_API_KEY
+if (!KEY) throw new Error('YOUTUBE_API_KEY is missing (put it in .env)')
+
+const API = 'https://www.googleapis.com/youtube/v3'
+const LANG = process.argv[2] ?? 'he'
+const CACHE = `scripts/.cache/playlists.${LANG}.json`
+const OUT = `src/data/songs.${LANG}.json`
+const PLAYLISTS_PER_QUERY = 3
+const MAX_ITEMS_PER_PLAYLIST = 200
+
+// Each query tags the songs it finds with an era or a genre.
+const QUERIES = LANG === 'en' ? [
+  { era: '70s', q: 'greatest hits of the 60s and 70s' },
+  { era: '80s', q: '80s greatest hits' },
+  { era: '90s', q: '90s greatest hits' },
+  { era: '00s', q: '2000s greatest hits' },
+  { era: '10s', q: '2010s biggest hits of the decade' },
+  { era: '20s', q: 'top hits 2024 2025' },
+  { genre: 'pop', q: 'best pop songs of all time' },
+  { genre: 'rock', q: 'classic rock greatest hits' },
+  { genre: 'hiphop', q: 'hip hop rap greatest hits' },
+  { genre: 'dance', q: 'best dance EDM hits of all time' },
+  { genre: 'rnb', q: 'r&b soul greatest hits' },
+] : [
+  { era: '70s', q: 'להיטים ישראלים שנות ה-60 וה-70' },
+  { era: '80s', q: 'להיטים ישראלים שנות ה-80' },
+  { era: '90s', q: 'להיטים ישראלים שנות ה-90' },
+  { era: '00s', q: 'להיטים ישראלים שנות ה-2000' },
+  { era: '10s', q: 'להיטים ישראלים 2010-2019 העשור' },
+  { era: '20s', q: 'להיטים ישראלים חדשים 2024 2025' },
+  { genre: 'mizrahi', q: 'מזרחית ים תיכונית להיטים' },
+  { genre: 'rock', q: 'רוק ישראלי הלהיטים הגדולים' },
+  { genre: 'pop', q: 'פופ ישראלי להיטים' },
+  { genre: 'hiphop', q: 'היפ הופ ראפ ישראלי' },
+  { genre: 'classic', q: 'שירי ארץ ישראל הישנה והטובה' },
+]
+const ERA_ORDER = ['70s', '80s', '90s', '00s', '10s', '20s']
+
+async function yt(path, params) {
+  const url = `${API}/${path}?${new URLSearchParams({ ...params, key: KEY })}`
+  const res = await fetch(url)
+  const body = await res.json()
+  if (!res.ok) throw new Error(`${path}: ${body.error?.message ?? res.status}`)
+  return body
+}
+
+// Playlist search costs 100 quota units per call, so the result is cached on disk.
+async function findPlaylists() {
+  try {
+    return JSON.parse(await readFile(CACHE, 'utf8'))
+  } catch {}
+  const found = []
+  for (const query of QUERIES) {
+    const body = await yt('search', {
+      part: 'snippet', type: 'playlist', maxResults: 10, q: query.q,
+      ...(LANG === 'en' ? { regionCode: 'US', relevanceLanguage: 'en' } : { regionCode: 'IL', relevanceLanguage: 'he' }),
+    })
+    const picked = body.items.slice(0, PLAYLISTS_PER_QUERY).map((item) => ({
+      id: item.id.playlistId, name: item.snippet.title, era: query.era, genre: query.genre,
+    }))
+    console.log(`${query.q}:`, picked.map((p) => p.name).join(' | '))
+    found.push(...picked)
+  }
+  await mkdir('scripts/.cache', { recursive: true })
+  await writeFile(CACHE, JSON.stringify(found, null, 2))
+  return found
+}
+
+async function playlistVideoIds(playlistId) {
+  const ids = []
+  let pageToken
+  do {
+    const body = await yt('playlistItems', {
+      part: 'contentDetails', playlistId, maxResults: 50, ...(pageToken && { pageToken }),
+    }).catch((err) => (console.warn(`  skipped ${playlistId}: ${err.message}`), { items: [] }))
+    ids.push(...body.items.map((item) => item.contentDetails.videoId))
+    pageToken = body.nextPageToken
+  } while (pageToken && ids.length < MAX_ITEMS_PER_PLAYLIST)
+  return ids
+}
+
+async function videoDetails(ids) {
+  const videos = []
+  for (let i = 0; i < ids.length; i += 50) {
+    const body = await yt('videos', {
+      part: 'snippet,contentDetails,statistics,status', id: ids.slice(i, i + 50).join(','), maxResults: 50,
+    })
+    videos.push(...body.items)
+  }
+  return videos
+}
+
+const seconds = (iso) => {
+  const m = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(iso) ?? []
+  return (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0)
+}
+
+const HEBREW = /[א-ת]/
+// A title belongs to the catalog's language: Hebrew letters, or Latin script only.
+const inLanguage = (text) =>
+  LANG === 'en' ? /[a-z]/i.test(text) && !/[^\u0000-ɏ‐-‧]/.test(text) : HEBREW.test(text)
+const REJECT = /\blive\b|לייב|חי באולפן|הופעה|בהופעה|קריוקי|karaoke|פלייבק|playback|רמיקס|remix|מחרוזת|cover|קאבר|מאש-?אפ|mashup|full album|האלבום המלא|אוסף|שעה של|פרק \d|טריילר|ראיון/i
+const NOISE = /הקליפ הרשמי|קליפ רשמי|וידאו רשמי|אודיו רשמי|official (music )?video|official audio|lyrics?( video)?|עם מילים|קליפ|אודיו|\bhd\b|\bhq\b|\b4k\b|prod\.? by.*$|להורדה.*$/gi
+
+const tidy = (s) => s.replace(/[“”״"]/g, '"').replace(/\s+/g, ' ').replace(/^[\s\-–—|:.,"']+|[\s\-–—|:.,"']+$/g, '').trim()
+const norm = (s) => s.toLowerCase().replace(/[֑-ׇ]/g, '').replace(/[^א-תa-z0-9]/g, '')
+
+function parseSong(video) {
+  const channel = video.snippet.channelTitle
+  const isTopic = / - Topic$/.test(channel)
+  const raw = tidy(video.snippet.title.replace(/[([{][^)\]}]*[)\]}]/g, ' ').replace(NOISE, ' '))
+  if (isTopic) return { artist: tidy(channel.replace(/ - Topic$/, '')), title: raw }
+  if (LANG === 'en') return parseEnglish(raw, video)
+
+  // Titles often repeat the names in English ("Artist - Song | אמן - שיר"): keep the Hebrew
+  // parts only, and drop English words glued onto them.
+  const parts = raw.split(/\s+[-–—|]\s+|\s*[–—|]\s*|\s*\/\/\s*|\s*\\\\\s*/)
+    .filter((part) => HEBREW.test(part))
+    .map((part) => tidy(part.replace(/[a-z][a-z'.]*/gi, ' ').replace(/[\])}]/g, ' ').replace(/\b(19|20)\d\d$/, '')))
+    .filter(Boolean)
+  if (parts.length < 2) return null
+  // "Song - Artist" uploads: trust the channel name when it matches one side.
+  const channelKey = norm(channel)
+  const artistFirst = !(channelKey && norm(parts[1]) === channelKey)
+  const [artist, title] = artistFirst ? [parts[0], parts[1]] : [parts[1], parts[0]]
+  return { artist, title }
+}
+
+function parseEnglish(raw, video) {
+  const parts = raw.split(/\s+[-–—|]\s+|\s*[–—|]\s*/).map(tidy).filter(Boolean)
+  // Official artist channels often title a video with the song name alone.
+  if (parts.length < 2 && video.snippet.categoryId !== '10') return null
+  const [artist, title] =
+    parts.length < 2 ? [video.snippet.channelTitle.replace(/\s*(VEVO|Official)$/i, ''), parts[0]] : parts
+  if (!artist || !title) return null
+  return { artist: tidy(artist), title: tidy(title.replace(/\s+(ft|feat|featuring)\b\.?\s.*$/i, '')) }
+}
+
+const playlists = await findPlaylists()
+const tags = new Map() // videoId -> { eras: {era: votes}, genres: Set }
+for (const playlist of playlists) {
+  const ids = await playlistVideoIds(playlist.id)
+  console.log(`${ids.length.toString().padStart(4)}  ${playlist.name}`)
+  for (const id of ids) {
+    const tag = tags.get(id) ?? { eras: {}, genres: new Set() }
+    if (playlist.era) tag.eras[playlist.era] = (tag.eras[playlist.era] ?? 0) + 1
+    if (playlist.genre) tag.genres.add(playlist.genre)
+    tags.set(id, tag)
+  }
+}
+
+// Playlists under-represent today's biggest names, so their most-viewed videos are added
+// directly. A video search costs 100 quota units, so each artist's result is cached.
+const ARTISTS = LANG === 'en' ? [] : [
+  'אודיה', 'אופק אדנק', 'נועה קירל', 'עומר אדם', 'עדן בן זקן', 'עדן חסון', 'אושר כהן', 'ששון איפרם שאולוב',
+  'אגם בוחבוט', 'אנה זק', 'סטטיק ובן אל תבורי', 'אייל גולן', 'שרית חדד', 'עידן רייכל', 'חנן בן ארי', 'ישי ריבו',
+  'נתן גושן', 'טונה', 'רביד פלוטניק', 'מרגי', 'איתי לוי', 'פאר טסי', 'משה פרץ', 'דודו אהרון', 'ליאור נרקיס',
+  'עידן עמדי', 'נס וסטילה', 'יסמין מועלם', 'בניה ברבי', 'עדן גולן', 'יובל רפאל', 'שחר סאול', 'אליעד',
+  'נרקיס', 'קרן פלס', 'שלמה ארצי',
+]
+const artistNames = (artist) => artist.split(' ').map((name, i) => norm(i ? name.replace(/^ו/, '') : name))
+const ARTIST_CACHE =`scripts/.cache/artists.${LANG}.json`
+const artistVideos = await readFile(ARTIST_CACHE, 'utf8').then(JSON.parse, () => ({}))
+for (const artist of ARTISTS) {
+  if (!artistVideos[artist]) {
+    const body = await yt('search', {
+      part: 'id', type: 'video', q: artist, maxResults: 50, order: 'viewCount', regionCode: 'IL', videoCategoryId: '10',
+    })
+    artistVideos[artist] = body.items.map((item) => item.id.videoId)
+    await writeFile(ARTIST_CACHE, JSON.stringify(artistVideos))
+  }
+  for (const id of artistVideos[artist]) {
+    if (!tags.has(id)) tags.set(id, { eras: {}, genres: new Set(), artistQuery: artist })
+  }
+  console.log(`${artistVideos[artist].length.toString().padStart(4)}  ${artist}`)
+}
+
+const videos = await videoDetails([...tags.keys()])
+const candidates = []
+for (const video of videos) {
+  const dur = seconds(video.contentDetails.duration)
+  const blocked = video.contentDetails.regionRestriction?.blocked?.includes('IL')
+  const allowed = video.contentDetails.regionRestriction?.allowed
+  if (!video.status.embeddable || video.status.privacyStatus !== 'public') continue
+  if (blocked || (allowed && !allowed.includes('IL'))) continue
+  if (dur < 90 || dur > 420) continue
+  if (!inLanguage(video.snippet.title) || REJECT.test(video.snippet.title)) continue
+
+  const parsed = parseSong(video)
+  if (!parsed || !inLanguage(parsed.title) || parsed.title.length > 40 || parsed.artist.length > 40) continue
+
+  const tag = tags.get(video.id)
+  // A search for an artist also returns other people's videos that merely mention the name.
+  // Duos are credited in several ways ("נס וסטילה", "נס X סטילה", "נס & סטילה"), so each
+  // name is matched on its own and the credit is unified to the searched spelling.
+  const credit = norm(parsed.artist)
+  const known = ARTISTS.find((artist) => credit === artistNames(artist).join(''))
+  if (known) parsed.artist = known
+  if (tag.artistQuery && !artistNames(tag.artistQuery).every((name) => credit.includes(name))) continue
+  const year = +video.snippet.publishedAt.slice(0, 4)
+  const voted = Object.entries(tag.eras).sort((a, b) => b[1] - a[1])[0]?.[0]
+  // Upload date only tells the release decade for songs that came out in the YouTube era.
+  // International labels re-upload old hits all the time, so it is not used for English.
+  const era = voted ?? (LANG === 'en' ? null : year >= 2020 ? '20s' : year >= 2012 ? '10s' : null)
+
+  const song = {
+    id: video.id, title: parsed.title, artist: parsed.artist, era,
+    genres: [...tag.genres], views: +video.statistics.viewCount || 0, dur,
+  }
+  candidates.push(song)
+}
+
+// Some uploads are titled "Song - Artist". A name that shows up as the artist of other
+// songs more often than its partner does is taken to be the artist.
+const artistCount = new Map()
+for (const song of candidates) artistCount.set(norm(song.artist), (artistCount.get(norm(song.artist)) ?? 0) + 1)
+for (const song of candidates) {
+  const asTitle = artistCount.get(norm(song.title)) ?? 0
+  if (asTitle >= 2 && asTitle > artistCount.get(norm(song.artist))) [song.artist, song.title] = [song.title, song.artist]
+}
+
+const byKey = new Map()
+for (const song of candidates) {
+  const key = norm(song.title) + '|' + norm(song.artist)
+  const prev = byKey.get(key)
+  if (prev) {
+    song.genres = [...new Set([...prev.genres, ...song.genres])]
+    song.era ??= prev.era
+  }
+  if (!prev || song.views > prev.views) byKey.set(key, song)
+}
+
+// Auto-generated "Topic" channels name the artist in English ("Omer Adam"), which duplicates
+// songs already found under the Hebrew name. Merge those, and reuse the pairs to translate
+// the English artist name on the songs that remain.
+const hebrewName = new Map()
+const byTitle = Map.groupBy(byKey.values(), (song) => norm(song.title))
+const merged = []
+for (const group of byTitle.values()) {
+  const hebrew = group.filter((song) => HEBREW.test(song.artist))
+  const english = group.filter((song) => !HEBREW.test(song.artist))
+  if (!hebrew.length || !english.length) {
+    merged.push(...group)
+    continue
+  }
+  const keep = hebrew.sort((a, b) => b.views - a.views)[0]
+  for (const dup of english) {
+    if (hebrew.length === 1) hebrewName.set(dup.artist, keep.artist)
+    keep.genres = [...new Set([...keep.genres, ...dup.genres])]
+    keep.era ??= dup.era
+  }
+  merged.push(...hebrew)
+}
+for (const song of merged) song.artist = hebrewName.get(song.artist) ?? song.artist
+
+// Difficulty 1 (easy) .. 5 (impossible): view-count rank inside the song's own era,
+// so old songs are not all "hard" just because YouTube came later.
+const songs = merged
+const groups = Map.groupBy(songs, (song) => song.era ?? 'none')
+for (const group of groups.values()) {
+  group.sort((a, b) => b.views - a.views)
+  group.forEach((song, i) => (song.diff = Math.min(5, Math.floor((i / group.length) * 5) + 1)))
+}
+songs.sort((a, b) => b.views - a.views)
+
+await mkdir('src/data', { recursive: true })
+await writeFile(OUT, JSON.stringify(songs))
+console.log(`\n${songs.length} songs -> ${OUT}`)
+for (const era of [...ERA_ORDER, 'none']) console.log(`  ${era}: ${groups.get(era)?.length ?? 0}`)
